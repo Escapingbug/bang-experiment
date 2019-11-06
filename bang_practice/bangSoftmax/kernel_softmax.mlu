@@ -1,0 +1,31 @@
+#include "mlu.h"
+#define INPUT_SIZE 20
+#define INPUT_NUM  256
+
+__mlu_entry__ void SoftmaxKernel(half* input, half* output) {
+    __nram__ half input_nram[INPUT_SIZE];
+    __nram__ half const_nram[INPUT_SIZE];
+    __nram__ half sum = 0.0;
+    __nram__ half max_val = 0.0;
+    __nram__ int32_t i = 0;
+
+    __memcpy(input_nram, input, INPUT_SIZE * sizeof(half), GDRAM2NRAM);
+    __nramset_half(output_nram, INPUT_SIZE, 0.0);
+
+
+    for (i = 0; i < INPUT_SIZE; ++i) {
+        if (max_val < input_nram[i]) {
+            max_val = input_nram[i];
+        }
+    }
+
+    __nramset_half(const_nram, INPUT_SIZE, max_val); // for subtraction
+
+    __bang_sub(input_nram, const_nram, INPUT_SIZE); // x - max
+    __bang_active_exp(input_nram, input_nram, INPUT_SIZE); // exp(x - max)
+    for (i = 0; i < INPUT_SIZE; ++i) {
+        sum += input_nram[i]; // sum(exp(x - max))
+    }
+    __bang_mul_const(input_nram, input_nram, 1 / sum, INPUT_SIZE); // exp(x - max) / sum(exp(x - max))
+    __memcpy(output, output_nram, OUTPUT_SIZE * sizeof(half), NRAM2GDRAM);
+}
