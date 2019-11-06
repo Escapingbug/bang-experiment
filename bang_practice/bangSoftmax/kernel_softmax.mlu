@@ -3,29 +3,52 @@
 #define INPUT_NUM  256
 
 __mlu_entry__ void SoftmaxKernel(half* input, half* output) {
-    __nram__ half input_nram[INPUT_SIZE];
-    __nram__ half const_nram[INPUT_SIZE];
+    __nram__ half whole_nram[32 * INPUT_NUM + 128];
+    __nram__ half trans_nram[32 * INPUT_NUM + 128];
+    __nram__ int32_t i, j;
+    __nram__ half input_nram[64];
+    __nram__ half const_nram[64];
     __nram__ half sum = 0.0;
-    __nram__ half max_val = 0.0;
-    __nram__ int32_t i = 0;
+    __nram__ half max_val = -3000.0;
 
-    __memcpy(input_nram, input, INPUT_SIZE * sizeof(half), GDRAM2NRAM);
-    __nramset_half(output_nram, INPUT_SIZE, 0.0);
+    __memcpy(whole_nram, input, sizeof(half) * INPUT_SIZE * INPUT_NUM, GDRAM2NRAM);
+    __nramset_half(whole_nram + INPUT_SIZE * INPUT_NUM, 256 * 12, -9999.0);
+    __bang_transpose(trans_nram, whole_nram, 32, 256);
 
-
-    for (i = 0; i < INPUT_SIZE; ++i) {
-        if (max_val < input_nram[i]) {
-            max_val = input_nram[i];
+    for (i = 0; i < INPUT_NUM; ++i) {
+        for (j = 0; j < INPUT_SIZE; ++j) {
+            input_nram[j] = trans_nram[i * 32 + j];
         }
+        /*
+        __memcpy(
+           input_nram,
+           &trans_nram[i * 32],
+           sizeof(half) * 64,
+           NRAM2NRAM); 
+           */
+
+        max_val = -3000.0;
+        for (j = 0; j < INPUT_SIZE; ++j) {
+            if (max_val < input_nram[j]) {
+                max_val = input_nram[j];
+            }
+        }
+        __nramset_half(const_nram, 64, max_val); // for subtraction
+
+        __bang_sub(input_nram, input_nram, const_nram, 64); // x - max
+        __bang_active_exp(input_nram, input_nram, 64); // exp(x - max)
+        sum = 0.0;
+        for (j = 0; j < INPUT_SIZE; ++j) {
+            sum += input_nram[j]; // sum(exp(x - max))
+        }
+        __bang_mul_const(input_nram, input_nram, 1.0 / sum, 64); // exp(x - max) / sum(exp(x - max))
+
+        for (j = 0; j < INPUT_SIZE; ++j) {
+            whole_nram[i + j * INPUT_NUM] = input_nram[j];
+        }
+        //__memcpy(&whole_nram[i * INPUT_SIZE], input_nram, 64 * sizeof(half), NRAM2NRAM);
     }
 
-    __nramset_half(const_nram, INPUT_SIZE, max_val); // for subtraction
-
-    __bang_sub(input_nram, const_nram, INPUT_SIZE); // x - max
-    __bang_active_exp(input_nram, input_nram, INPUT_SIZE); // exp(x - max)
-    for (i = 0; i < INPUT_SIZE; ++i) {
-        sum += input_nram[i]; // sum(exp(x - max))
-    }
-    __bang_mul_const(input_nram, input_nram, 1 / sum, INPUT_SIZE); // exp(x - max) / sum(exp(x - max))
-    __memcpy(output, output_nram, OUTPUT_SIZE * sizeof(half), NRAM2GDRAM);
+    //__bang_transpose(trans_nram, whole_nram, 32, 256);
+    __memcpy(output, whole_nram, INPUT_NUM * INPUT_SIZE * sizeof(half), NRAM2GDRAM);
 }
